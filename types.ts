@@ -1,3 +1,4 @@
+
 export type GameStatus = 'MENU' | 'PLAYING' | 'GAMEOVER';
 
 export type Operator = '+' | '-';
@@ -25,6 +26,7 @@ export interface Block {
   row: number; // 0 is bottom, MAX_ROWS is top
   colorData: CandyColor;
   lastImpact: number; // Timestamp to trigger jelly animation
+  status: 'idle' | 'clearing'; // 'clearing' means it is animating out
 }
 
 export interface Particle {
@@ -35,6 +37,15 @@ export interface Particle {
   vy: number;
   color: string;
   life: number;
+}
+
+export interface FloatingText {
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  scale: number;
 }
 
 // Define the candy flavors (gradients)

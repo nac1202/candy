@@ -1,12 +1,79 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, RefreshCw, Trophy, Flame, Volume2, VolumeX, Sparkles } from 'lucide-react';
+import { Play, RefreshCw, Trophy, Flame, Volume2, VolumeX, BrainCircuit } from 'lucide-react';
 import { Button } from './Button';
 import { Keypad } from './Keypad';
-import { GameStatus, FallingItem, Block, CANDY_COLORS, Particle, CandyColor } from '../types';
+import { GameStatus, FallingItem, Block, CANDY_COLORS, Particle, CandyColor, FloatingText } from '../types';
 import { COLUMNS, MAX_ROWS, ROW_HEIGHT_PERCENT, BASE_SPEED, SPAWN_RATE_INITIAL, DIFFICULTY_SCALING } from '../constants';
 import { generateProblem, randomInt } from '../utils/math';
 import { soundManager } from '../utils/sound';
+
+// Helper: Find clusters of the target color (size >= 2)
+const findDetonationTargets = (currentBlocks: Block[], targetColorFrom: string): Set<string> => {
+  const blockMap = new Map<string, Block>();
+  currentBlocks.forEach(b => blockMap.set(`${b.col},${b.row}`, b));
+  
+  const visited = new Set<string>();
+  const toRemove = new Set<string>();
+
+  const candidates = currentBlocks.filter(b => b.colorData.from === targetColorFrom && b.status !== 'clearing');
+
+  for (const block of candidates) {
+      if (visited.has(block.id)) continue;
+      
+      const cluster: Block[] = [];
+      const queue = [block];
+      visited.add(block.id);
+      cluster.push(block);
+      
+      let head = 0;
+      while (head < queue.length) {
+          const curr = queue[head++];
+          const neighbors = [
+              {c: curr.col + 1, r: curr.row},
+              {c: curr.col - 1, r: curr.row},
+              {c: curr.col, r: curr.row + 1},
+              {c: curr.col, r: curr.row - 1},
+          ];
+          
+          for (const n of neighbors) {
+              const key = `${n.c},${n.r}`;
+              const neighbor = blockMap.get(key);
+              if (neighbor && !visited.has(neighbor.id) && 
+                  neighbor.colorData.from === targetColorFrom && 
+                  neighbor.status !== 'clearing') {
+                  visited.add(neighbor.id);
+                  cluster.push(neighbor);
+                  queue.push(neighbor);
+              }
+          }
+      }
+
+      if (cluster.length >= 2) {
+          cluster.forEach(b => toRemove.add(b.id));
+      }
+  }
+  return toRemove;
+};
+
+const removeAndRefill = (currentBlocks: Block[], idsToRemove: Set<string>): Block[] => {
+    const keptBlocks = currentBlocks.filter(b => !idsToRemove.has(b.id));
+    const nextBlocks: Block[] = [];
+    
+    for (let c = 0; c < COLUMNS; c++) {
+        const colBlocks = keptBlocks.filter(b => b.col === c);
+        colBlocks.sort((a, b) => a.row - b.row);
+        colBlocks.forEach((b, idx) => {
+            const fell = b.row !== idx;
+            nextBlocks.push({ 
+                ...b, 
+                row: idx, 
+                lastImpact: fell ? Date.now() : b.lastImpact
+            });
+        });
+    }
+    return nextBlocks;
+};
 
 export const GameLayout: React.FC = () => {
   // -- State --
@@ -17,7 +84,10 @@ export const GameLayout: React.FC = () => {
   const [fallingItems, setFallingItems] = useState<FallingItem[]>([]);
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [particles, setParticles] = useState<Particle[]>([]);
+  const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
   const [isMuted, setIsMuted] = useState(false);
+  const [isShaking, setIsShaking] = useState(false);
+  const [isFlashing, setIsFlashing] = useState(false);
   
   // -- Refs for Game Loop --
   const requestRef = useRef<number>(0);
@@ -25,8 +95,8 @@ export const GameLayout: React.FC = () => {
   const lastSpawnTimeRef = useRef<number>(0);
   const gameSpeedRef = useRef<number>(BASE_SPEED);
   const spawnRateRef = useRef<number>(SPAWN_RATE_INITIAL);
+  const itemsSolvedRef = useRef<number>(0);
   
-  // To avoid stale closures in animation frame
   const stateRef = useRef({
     status,
     fallingItems,
@@ -57,19 +127,21 @@ export const GameLayout: React.FC = () => {
     setFallingItems([]);
     setBlocks([]);
     setParticles([]);
+    setFloatingTexts([]);
     setCurrentInput('');
+    setIsShaking(false);
+    setIsFlashing(false);
     gameSpeedRef.current = BASE_SPEED;
     spawnRateRef.current = SPAWN_RATE_INITIAL;
     lastSpawnTimeRef.current = 0;
+    itemsSolvedRef.current = 0;
     setStatus('PLAYING');
   };
 
-  // -- Game Logic Helpers --
+  // -- Helpers --
 
   const spawnItem = useCallback(() => {
     const col = randomInt(0, COLUMNS - 1);
-    
-    // Check height of this column
     const blocksInCol = stateRef.current.blocks.filter(b => b.col === col).length;
     if (blocksInCol >= MAX_ROWS) return; 
 
@@ -94,20 +166,34 @@ export const GameLayout: React.FC = () => {
     if (requestRef.current) cancelAnimationFrame(requestRef.current);
   };
 
-  const addParticles = useCallback((x: number, y: number, color: string, count: number) => {
+  const addParticles = useCallback((x: number, y: number, color: string, count: number, explosive: boolean = false) => {
     const newParticles: Particle[] = [];
+    const speedMult = explosive ? 2.0 : 1.0;
     for(let i=0; i<count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const velocity = (Math.random() * 3 + 2) * speedMult;
       newParticles.push({
         id: Math.random().toString(),
         x,
         y,
-        vx: (Math.random() - 0.5) * 2.5,
-        vy: (Math.random() - 0.5) * 2.5,
+        vx: Math.cos(angle) * velocity,
+        vy: (Math.sin(angle) * velocity) - (explosive ? 2 : 0), // Initial pop up
         color,
-        life: 1.0
+        life: 1.0 + Math.random() * 0.5
       });
     }
     setParticles(prev => [...prev, ...newParticles]);
+  }, []);
+
+  const addFloatingText = useCallback((x: number, y: number, text: string, color: string = '#fff', scale: number = 1) => {
+      setFloatingTexts(prev => [...prev, {
+          id: Math.random().toString(),
+          x,
+          y,
+          text,
+          color,
+          scale
+      }]);
   }, []);
 
   // -- Main Loop --
@@ -136,11 +222,9 @@ export const GameLayout: React.FC = () => {
         const nextY = item.y + moveAmt;
 
         const blocksInCol = stateRef.current.blocks.filter(b => b.col === item.col).length;
-        // Calculate floor Y %
         const floorY = 100 - ((blocksInCol + 1) * ROW_HEIGHT_PERCENT);
 
         if (nextY >= floorY) {
-          // Land
           soundManager.playSFX('land');
           newBlocks.push({
             id: `block-${Date.now()}-${Math.random()}`,
@@ -148,6 +232,7 @@ export const GameLayout: React.FC = () => {
             row: blocksInCol,
             colorData: item.colorData,
             lastImpact: Date.now(),
+            status: 'idle',
           });
           
           if (blocksInCol + 1 >= MAX_ROWS) {
@@ -159,32 +244,28 @@ export const GameLayout: React.FC = () => {
       });
 
       if (newBlocks.length > 0) {
-         setBlocks(prev => {
-          const affectedCols = new Set(newBlocks.map(b => b.col));
-          // Propagate "squash" to existing blocks in column
-          const updatedPrev = prev.map(b => {
+         const combinedBlocks = [...stateRef.current.blocks, ...newBlocks];
+         const affectedCols = new Set(newBlocks.map(b => b.col));
+         const animatedBlocks = combinedBlocks.map(b => {
             if (affectedCols.has(b.col)) {
-              return { ...b, lastImpact: Date.now() };
+                return { ...b, lastImpact: Date.now() };
             }
             return b;
-          });
-          return [...updatedPrev, ...newBlocks];
-        });
+         });
+         setBlocks(animatedBlocks);
       }
       
-      if (isGameOver) {
-        gameOver();
-      }
+      if (isGameOver) gameOver();
 
       return nextItems;
     });
 
-    // Particles
+    // Particles & Gravity
     setParticles(prev => prev.map(p => ({
       ...p,
-      x: p.x + p.vx,
-      y: p.y + p.vy,
-      life: p.life - 0.03
+      x: p.x + p.vx * 0.1, // Drag
+      y: p.y + p.vy * 0.1 + 0.2, // Gravity
+      life: p.life - 0.02
     })).filter(p => p.life > 0));
 
     requestRef.current = requestAnimationFrame(update);
@@ -199,7 +280,7 @@ export const GameLayout: React.FC = () => {
     };
   }, [status, update]);
 
-  // -- Inputs --
+  // -- Check Answer Logic --
 
   const checkAnswer = useCallback((inputVal: string) => {
     const numVal = parseInt(inputVal, 10);
@@ -207,98 +288,118 @@ export const GameLayout: React.FC = () => {
 
     const items = [...stateRef.current.fallingItems];
     
-    // --- RULE: SUM ALL FALLING ---
-    // If player types the sum of ALL currently falling items (and there are > 1), 
-    // clear all falling items AND matching colored blocks from stack.
+    // --- SUM ALL LOGIC ---
     if (items.length > 1) {
         const totalSum = items.reduce((acc, item) => acc + item.answer, 0);
         if (numVal === totalSum) {
             soundManager.playSFX('mega_clear');
             
-            // Identify colors involved in the combo
+            // Flash screen
+            setIsFlashing(true);
+            setTimeout(() => setIsFlashing(false), 300);
+
             const involvedColors = new Set(items.map(i => i.colorData.from));
             
-            // Particles for falling items
             items.forEach(item => {
-                 addParticles(item.col * (100/COLUMNS) + 10, item.y + 5, '#ffffff', 10);
+                 addParticles(item.col * (100/COLUMNS) + 10, item.y + 5, '#ffffff', 15, true);
             });
+            
+            addFloatingText(50, 30, "EXCELLENT!", "#fbbf24", 1.5);
 
-            // Clear all falling
             setFallingItems([]);
 
-            // Clear blocks from stack logic
-            setBlocks(prevBlocks => {
-                // Filter out blocks that match the colors
-                const keptBlocks = prevBlocks.filter(b => !involvedColors.has(b.colorData.from));
-                
-                // Particles for the blocks being removed (using current state to find them)
-                prevBlocks.forEach(b => {
-                    if (involvedColors.has(b.colorData.from)) {
-                        addParticles(b.col * (100/COLUMNS) + 10, 100 - (b.row * ROW_HEIGHT_PERCENT) - 5, b.colorData.to, 8);
-                    }
-                });
-
-                // Re-calculate rows (Gravity) for kept blocks
-                const newBlocks: Block[] = [];
-                for (let c = 0; c < COLUMNS; c++) {
-                    const colBlocks = keptBlocks.filter(b => b.col === c);
-                    colBlocks.sort((a, b) => a.row - b.row); // sort bottom to top
-                    colBlocks.forEach((b, idx) => {
-                        newBlocks.push({ ...b, row: idx, lastImpact: Date.now() });
-                    });
-                }
-                return newBlocks;
+            const targets = new Set<string>();
+            stateRef.current.blocks.forEach(b => {
+              if (involvedColors.has(b.colorData.from)) {
+                targets.add(b.id);
+              }
             });
 
-            // Bonus Score
-            setScore(prev => prev + 100 + (items.length * 50));
+            if (targets.size > 0) {
+               setBlocks(prev => prev.map(b => targets.has(b.id) ? { ...b, status: 'clearing' } : b));
+               
+               setTimeout(() => {
+                 stateRef.current.blocks.filter(b => targets.has(b.id)).forEach(b => {
+                    addParticles(b.col * (100/COLUMNS) + 10, 100 - (b.row * ROW_HEIGHT_PERCENT) - 5, b.colorData.to, 12, true);
+                 });
+                 setBlocks(prev => removeAndRefill(prev, targets));
+                 soundManager.playSFX('mega_clear');
+               }, 500);
+            }
+
+            setScore(prev => prev + 100 + (items.length * 50) + (targets.size * 20));
             setCurrentInput('');
             return; 
         }
     }
 
-    // --- STANDARD RULE: SINGLE ITEM ---
-    // Prioritize lowest items
+    // --- SINGLE ITEM LOGIC ---
     items.sort((a, b) => b.y - a.y);
-
     const matchIndex = items.findIndex(item => item.answer === numVal);
 
     if (matchIndex !== -1) {
       const matchedItem = items[matchIndex];
+      
       soundManager.playSFX('correct');
+      addParticles(matchedItem.col * (100/COLUMNS) + 10, matchedItem.y + 5, '#fff', 12, true);
+      addFloatingText(matchedItem.col * (100/COLUMNS) + 10, matchedItem.y, "Nice!", "#fff");
       
       setFallingItems(prev => prev.filter(i => i.id !== matchedItem.id));
       
-      // Particle effect
-      addParticles(matchedItem.col * (100/COLUMNS) + 10, matchedItem.y + 5, '#fff', 8);
+      const targets = findDetonationTargets(stateRef.current.blocks, matchedItem.colorData.from);
       
-      // Score logic
-      setScore(prev => {
-        const newScore = prev + 10 + stateRef.current.level;
-        if (newScore % DIFFICULTY_SCALING.LEVEL_THRESHOLD === 0) {
+      if (targets.size > 0) {
+          setBlocks(prev => prev.map(b => targets.has(b.id) ? { ...b, status: 'clearing' } : b));
+          
+          if (targets.size >= 3) {
+             setIsShaking(true);
+             setTimeout(() => setIsShaking(false), 400);
+          }
+
+          setTimeout(() => {
+              const removedBlocks = stateRef.current.blocks.filter(b => targets.has(b.id));
+              removedBlocks.forEach(b => {
+                  const pCount = targets.size > 4 ? 20 : 10;
+                  addParticles(b.col * (100/COLUMNS) + 10, 100 - (b.row * ROW_HEIGHT_PERCENT) - 5, b.colorData.to, pCount, targets.size > 4);
+              });
+
+              setBlocks(prev => removeAndRefill(prev, targets));
+              
+              if (targets.size > 4) {
+                soundManager.playSFX('mega_clear');
+                setIsFlashing(true);
+                setTimeout(() => setIsFlashing(false), 200);
+                addFloatingText(50, 50, `COMBO x${targets.size}!`, "#fbbf24", 1.5);
+              } else {
+                soundManager.playSFX('correct'); // Secondary clear sound
+                addFloatingText(removedBlocks[0].col * (100/COLUMNS) + 10, 100 - (removedBlocks[0].row * ROW_HEIGHT_PERCENT), `+${targets.size * 30}`);
+              }
+              
+              setScore(s => s + (removedBlocks.length * 30) + (targets.size > 4 ? 100 : 0));
+          }, 500);
+      }
+
+      itemsSolvedRef.current += 1;
+      if (itemsSolvedRef.current % DIFFICULTY_SCALING.LEVEL_THRESHOLD === 0) {
           setLevel(l => l + 1);
           gameSpeedRef.current += DIFFICULTY_SCALING.SPEED_INC;
           spawnRateRef.current = Math.max(500, spawnRateRef.current - DIFFICULTY_SCALING.SPAWN_DEC);
-        }
-        return newScore;
-      });
+      }
       
+      setScore(prev => prev + 10 + stateRef.current.level);
       setCurrentInput('');
     } else {
-        // Auto clear if too long
         if (inputVal.length > 3) {
             setCurrentInput('');
             soundManager.playSFX('wrong');
         }
     }
-  }, [addParticles]);
+  }, [addParticles, addFloatingText]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (status !== 'PLAYING') return;
-
       if (e.key >= '0' && e.key <= '9') {
-        // Use functional update to get latest state
         setCurrentInput(prev => {
             const next = prev + e.key;
             checkAnswer(next);
@@ -306,38 +407,36 @@ export const GameLayout: React.FC = () => {
         });
       } else if (e.key === 'Backspace') {
         setCurrentInput(prev => prev.slice(0, -1));
-      } else if (e.key === 'Escape') {
-         // Optional pause
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [status, checkAnswer]);
 
 
-  // -- Styles --
   const getCandyStyle = (color: CandyColor) => {
     return `bg-gradient-to-br ${color.from} ${color.to} border-2 ${color.border} ${color.shadow}`;
   };
 
   return (
-    <div className="relative w-full h-full max-w-md mx-auto flex flex-col overflow-hidden bg-gradient-to-br from-indigo-900 via-purple-900 to-fuchsia-900 shadow-2xl">
+    <div className={`relative w-full h-full max-w-md mx-auto flex flex-col overflow-hidden bg-gradient-to-br from-indigo-900 via-purple-900 to-fuchsia-900 shadow-2xl ${isShaking ? 'animate-shake' : ''}`}>
       
-      {/* Background FX */}
+      {/* Screen Flash Effect */}
+      {isFlashing && <div className="absolute inset-0 bg-white z-50 animate-flash pointer-events-none mix-blend-overlay" />}
+      
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_120%,rgba(255,255,255,0.15),transparent)] pointer-events-none" />
       
-      {/* Header / HUD */}
+      {/* Header */}
       <div className="relative z-20 flex justify-between items-center p-4 pt-6">
         <div className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 shadow-glass">
-           <Trophy size={20} className="text-yellow-300" />
-           <span className="font-bold text-xl text-white">{score}</span>
+           <Trophy size={20} className="text-yellow-300 drop-shadow-md" />
+           <span className="font-bold text-xl text-white drop-shadow-md">{score}</span>
         </div>
         
         <div className="flex items-center gap-2">
              <div className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 shadow-glass mr-2">
-                <Flame size={20} className="text-orange-400" />
-                <span className="font-bold text-lg text-white">Lv.{level}</span>
+                <Flame size={20} className="text-orange-400 drop-shadow-md" />
+                <span className="font-bold text-lg text-white drop-shadow-md">Lv.{level}</span>
             </div>
 
             <button 
@@ -349,38 +448,21 @@ export const GameLayout: React.FC = () => {
         </div>
       </div>
 
-      {/* Game Container */}
+      {/* Game Area */}
       <div className="relative flex-1 w-full mt-2 mb-2">
-        
-        {/* Grid Cols */}
         <div className="absolute inset-0 flex pointer-events-none opacity-5">
             {Array.from({ length: COLUMNS }).map((_, i) => (
                 <div key={i} className="flex-1 border-r border-white last:border-0" />
             ))}
         </div>
 
-        {/* Particles */}
-        {particles.map(p => (
-            <div 
-                key={p.id}
-                className="absolute rounded-full pointer-events-none"
-                style={{
-                    left: `${p.x}%`,
-                    top: `${p.y}%`,
-                    width: '6px',
-                    height: '6px',
-                    backgroundColor: p.color,
-                    opacity: p.life,
-                    transform: `scale(${p.life}) translate(-50%, -50%)`
-                }}
-            />
-        ))}
-
-        {/* Blocks (Stacked) */}
+        {/* Blocks */}
         {blocks.map(block => (
             <div
                 key={`${block.id}-${block.lastImpact}`} 
-                className={`absolute px-1 transition-transform animate-jelly origin-bottom`}
+                className={`absolute px-1 transition-transform origin-bottom 
+                   ${block.status === 'clearing' ? 'animate-clear-charge z-10' : 'animate-jelly'}
+                `}
                 style={{
                     left: `${block.col * (100 / COLUMNS)}%`,
                     bottom: `${block.row * ROW_HEIGHT_PERCENT}%`,
@@ -388,7 +470,9 @@ export const GameLayout: React.FC = () => {
                     height: `${ROW_HEIGHT_PERCENT}%`,
                 }}
             >
-                <div className={`w-full h-full rounded-xl shadow-candy relative flex items-center justify-center ${getCandyStyle(block.colorData)}`}>
+                <div className={`w-full h-full rounded-xl shadow-candy relative flex items-center justify-center ${getCandyStyle(block.colorData)} 
+                     ${block.status === 'clearing' ? 'shadow-glow-xl brightness-150 border-white scale-105' : ''}
+                `}>
                     <div className="absolute top-1 left-1 right-1 h-1/3 bg-gradient-to-b from-white/40 to-transparent rounded-t-lg" />
                 </div>
             </div>
@@ -408,27 +492,64 @@ export const GameLayout: React.FC = () => {
             >
                  <div className={`w-full h-full rounded-full shadow-candy relative flex items-center justify-center ${getCandyStyle(item.colorData)}`}>
                     <div className="absolute top-2 left-1/4 w-1/2 h-1/3 bg-gradient-to-b from-white/50 to-transparent rounded-full" />
-                    <span className="font-black text-white text-lg md:text-xl relative z-10 drop-shadow-md">
+                    <span className="font-black text-white text-lg md:text-xl relative z-10 drop-shadow-md filter">
                         {item.expression}
                     </span>
                 </div>
             </div>
         ))}
         
-        {/* Danger Line at top */}
+        {/* Particles */}
+        {particles.map(p => (
+            <div 
+                key={p.id}
+                className="absolute rounded-full pointer-events-none"
+                style={{
+                    left: `${p.x}%`,
+                    top: `${p.y}%`,
+                    width: `${p.life * 10}px`,
+                    height: `${p.life * 10}px`,
+                    backgroundColor: p.color,
+                    opacity: p.life,
+                    transform: `translate(-50%, -50%)`,
+                    boxShadow: `0 0 10px ${p.color}`
+                }}
+            />
+        ))}
+
+        {/* Floating Text */}
+        {floatingTexts.map(ft => (
+            <div
+                key={ft.id}
+                className="absolute pointer-events-none font-black text-stroke animate-float-up z-50 whitespace-nowrap"
+                style={{
+                    left: `${ft.x}%`,
+                    top: `${ft.y}%`,
+                    color: ft.color,
+                    fontSize: `${1.5 * ft.scale}rem`,
+                    textShadow: '0 4px 0 rgba(0,0,0,0.2), 0 0 10px rgba(255,255,255,0.5)'
+                }}
+                onAnimationEnd={() => {
+                    setFloatingTexts(prev => prev.filter(t => t.id !== ft.id));
+                }}
+            >
+                {ft.text}
+            </div>
+        ))}
+        
         <div className="absolute top-0 w-full border-b-2 border-red-500/30 border-dashed pointer-events-none" />
       </div>
 
-      {/* Input Display */}
+      {/* Input */}
       <div className="relative z-20 w-full px-4 mb-2">
         <div className="w-full h-14 bg-black/30 backdrop-blur-md rounded-2xl border-2 border-white/10 flex items-center justify-center shadow-inner transition-all">
-             <span className="text-3xl font-mono text-white font-bold tracking-widest drop-shadow-lg">
+             <span className="text-3xl font-mono text-white font-bold tracking-widest drop-shadow-lg animate-pulse-fast">
                 {currentInput || <span className="opacity-20">...</span>}
              </span>
         </div>
       </div>
 
-      {/* Keypad Area */}
+      {/* Keypad */}
       <div className="relative z-20 w-full bg-black/20 backdrop-blur-lg rounded-t-3xl pt-2 pb-6 shadow-[0_-4px_20px_rgba(0,0,0,0.3)] border-t border-white/10">
          <Keypad 
             onInput={(n) => {
@@ -441,31 +562,37 @@ export const GameLayout: React.FC = () => {
          />
       </div>
 
-      {/* Menu Overlay */}
+      {/* Menu */}
       {status === 'MENU' && (
           <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm animate-in fade-in">
-              <div className="p-8 bg-white rounded-[2rem] shadow-2xl text-center max-w-xs transform scale-100 transition-transform border-4 border-pink-200">
+              <div className="p-8 bg-white rounded-[2rem] shadow-2xl text-center max-w-xs transform scale-100 transition-transform border-4 border-pink-200 animate-pop-in">
                   <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-purple-600 mb-2 drop-shadow-sm tracking-tight">
                     Stack<br/>Attack
                   </h1>
-                  <p className="text-slate-500 mb-8 font-bold">Solve math, stack candy!</p>
-                  <div className="text-sm text-slate-400 mb-4 bg-slate-50 p-2 rounded-lg">
-                      <p className="font-bold text-pink-500">Pro Tip:</p>
-                      <p>Sum ALL falling numbers to clear matching colors!</p>
+                  <p className="text-slate-500 mb-6 font-bold">Solve math to clear blocks!</p>
+                  
+                  <div className="text-sm text-slate-500 mb-6 bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+                      <div className="flex items-center justify-center gap-2 mb-2">
+                        <BrainCircuit className="text-pink-500" size={18} />
+                        <span className="font-black text-indigo-800 uppercase">How to Play</span>
+                      </div>
+                      <p className="leading-tight mb-2">1. Blocks of the same color connect.</p>
+                      <p className="leading-tight">2. Solve a <span className="font-bold text-pink-500">Red Equation</span> to explode all connected <span className="font-bold text-pink-500">Red Blocks</span>!</p>
                   </div>
-                  <Button onClick={startGame} size="lg" className="w-full animate-pulse-fast shadow-xl">
+
+                  <Button onClick={startGame} size="lg" className="w-full animate-pulse-fast shadow-xl hover:scale-105 transition-transform">
                       <div className="flex items-center justify-center gap-2">
-                        <Play fill="currentColor" /> PLAY
+                        <Play fill="currentColor" /> START
                       </div>
                   </Button>
               </div>
           </div>
       )}
 
-      {/* Game Over Overlay */}
+      {/* Game Over */}
       {status === 'GAMEOVER' && (
           <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-red-900/80 backdrop-blur-md animate-in zoom-in duration-300">
-              <div className="p-8 bg-white rounded-[2rem] shadow-2xl text-center max-w-xs w-full border-4 border-red-300 relative overflow-hidden">
+              <div className="p-8 bg-white rounded-[2rem] shadow-2xl text-center max-w-xs w-full border-4 border-red-300 relative overflow-hidden animate-shake">
                   <div className="absolute top-0 left-0 w-full h-2 bg-red-400" />
                   <h2 className="text-4xl font-black text-red-500 mb-1 mt-2">GAME OVER</h2>
                   <p className="text-slate-400 text-sm mb-6 uppercase tracking-wider font-bold">Stack Overflow!</p>
@@ -475,7 +602,7 @@ export const GameLayout: React.FC = () => {
                       <p className="text-5xl font-black text-slate-800">{score}</p>
                   </div>
                   
-                  <Button onClick={startGame} size="lg" variant="secondary" className="w-full">
+                  <Button onClick={startGame} size="lg" variant="secondary" className="w-full hover:scale-105 transition-transform">
                       <div className="flex items-center justify-center gap-2">
                         <RefreshCw /> TRY AGAIN
                       </div>
