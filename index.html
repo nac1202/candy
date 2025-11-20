@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Math Stack Attack</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap');
+      body {
+        font-family: 'Fredoka', sans-serif;
+        touch-action: manipulation; /* Prevent double-tap zoom */
+      }
+      /* Custom scrollbar for neatness */
+      ::-webkit-scrollbar {
+        width: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #2e1065;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #f472b6;
+        border-radius: 3px;
+      }
+      
+      .candy-shine {
+        background: linear-gradient(180deg, rgba(255,255,255,0.8) 0%, rgba(255,255,255,0.2) 40%, rgba(255,255,255,0) 100%);
+      }
+    </style>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Fredoka', 'sans-serif'],
+            },
+            colors: {
+              game: {
+                bg: '#2e1065',      // deep violet
+                panel: '#4c1d95',   // violet-900
+                primary: '#f472b6', // pink-400
+                secondary: '#22d3ee', // cyan-400
+                accent: '#facc15',  // yellow-400
+                danger: '#ef4444',  // red-500
+                success: '#4ade80', // green-400
+              }
+            },
+            boxShadow: {
+              'candy': 'inset 0 2px 6px rgba(255,255,255,0.6), inset 0 -4px 4px rgba(0,0,0,0.2), 0 4px 0 rgba(0,0,0,0.2)',
+              'candy-pressed': 'inset 0 4px 8px rgba(0,0,0,0.3), 0 0 0 rgba(0,0,0,0)',
+              'glass': '0 8px 32px 0 rgba(31, 38, 135, 0.37)',
+            },
+            animation: {
+              'bounce-short': 'bounce-short 0.3s infinite alternate',
+              'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+              'float': 'float 3s ease-in-out infinite',
+              'jelly': 'jelly 0.5s cubic-bezier(0.25, 1, 0.5, 1) both',
+            },
+            keyframes: {
+              'bounce-short': {
+                '0%': { transform: 'translateY(0)' },
+                '100%': { transform: 'translateY(-5%)' }
+              },
+              'float': {
+                '0%, 100%': { transform: 'translateY(0)' },
+                '50%': { transform: 'translateY(-10px)' }
+              },
+              'jelly': {
+                '0%': { transform: 'scale(1, 1)' },
+                '30%': { transform: 'scale(1.3, 0.7)' },   /* More extreme squash */
+                '40%': { transform: 'scale(0.75, 1.25)' }, /* High stretch rebound */
+                '50%': { transform: 'scale(1.15, 0.85)' },
+                '65%': { transform: 'scale(0.95, 1.05)' },
+                '75%': { transform: 'scale(1.05, 0.95)' },
+                '100%': { transform: 'scale(1, 1)' }
+              }
+            }
+          }
+        }
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0"
+  }
+}
+</script>
+</head>
+  <body class="bg-game-bg text-white overflow-hidden h-screen w-screen select-none">
+    <div id="root"></div>
+  </body>
+</html>

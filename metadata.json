@@ -1,0 +1,5 @@
+{
+  "name": "Math Stack Attack",
+  "description": "A vibrant, pop-styled vertical math game where equations fall like rain. Solve them before they hit the ground! If they land, they turn into solid blocks. Don't let the stack reach the top!",
+  "requestFramePermissions": []
+}
